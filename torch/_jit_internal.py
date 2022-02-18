@@ -330,7 +330,7 @@ def get_type_hint_captures(fn):
         src = inspect.getsource(fn)
     except OSError:
         return {}
-    
+
     # Gather a dictionary of parameter name -> type, skipping any parameters whose annotated
     # types are strings. These are only understood by TorchScript in the context of a type annotation
     # that refers to a class in its own definition, but trying to include a mapping for this in the result

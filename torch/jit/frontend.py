@@ -197,7 +197,7 @@ def get_jit_class_def(cls, self_name):
 
     def is_classmethod(fn):
         return inspect.ismethod(fn) and getattr(fn, "__self__", None) == cls
-    
+
     # Special case for dataclasses. In general we need access to the source code for
     # any function or method to JIT compile it. But the dataclasses module dynamically
     # adds magic methods to classes, and we can't get the source code for those- in particular,
@@ -212,11 +212,11 @@ def get_jit_class_def(cls, self_name):
             synthesizer_fn = DATACLASS_MAGIC_METHODS.get(name)
             if synthesizer_fn:
                 obj = synthesizer_fn(cls)
-            
+
             method_defs.append(
                 get_jit_def(obj, name, self_name=self_name, is_classmethod=is_classmethod(obj))
             )
-    
+
     # Normal case
     else:
         method_defs = [

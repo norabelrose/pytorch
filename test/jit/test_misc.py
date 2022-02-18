@@ -46,7 +46,7 @@ class TestMisc(JitTestCase):
 
         self.assertEqual(out, out_script)
         self.assertEqual(captured, captured_script)
-    
+
     def test_kwarg_support(self):
         with self.assertRaisesRegex(torch.jit.frontend.NotSupportedError, "variable number of arguments"):
             class M(torch.nn.Module):

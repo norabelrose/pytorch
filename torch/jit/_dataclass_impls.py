@@ -49,7 +49,7 @@ def synthesize__init__(cls) -> ParsedDef:
     # Call user's impl of __post_init__ if it exists
     if hasattr(cls, '__post_init__'):
         body.append(f'self.__post_init__()')    # TODO: Support InitVars here
-    
+
     return compose_fn(cls, '__init__', body)
 
 def synthesize__repr__(cls) -> ParsedDef:
