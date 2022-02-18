@@ -41,18 +41,16 @@ def compose_fn(cls, name: str, body_lines: List[str]) -> ParsedDef:
 
 
 def synthesize__init__(cls) -> ParsedDef:
-    return compose_fn(
-        cls, '__init__',
-        [
-            # Assign all attributes to self
-            f'self.{field.name} = {field.name}'
-            for field in dataclasses.fields(cls) if field.init
-        ] + [
-            # TODO: Support InitVars here
-            # Call user's impl of __post_init__ if it exists
-            # 'self.__post_init__()'
-        ]
-    )
+    body = [
+        # Assign all attributes to self
+        f'self.{field.name} = {field.name}'
+        for field in dataclasses.fields(cls) if field.init
+    ]
+    # Call user's impl of __post_init__ if it exists
+    if hasattr(cls, '__post_init__'):
+        body.append(f'self.__post_init__()')    # TODO: Support InitVars here
+    
+    return compose_fn(cls, '__init__', body)
 
 def synthesize__repr__(cls) -> ParsedDef:
     return compose_fn(
