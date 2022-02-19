@@ -1,16 +1,16 @@
 # Functions for synthesizing magic methods for JIT-compiled dataclasses
 from functools import partial
 from torch._sources import ParsedDef, SourceContext
-from typing import List
+from typing import List, Optional
 import ast
 import dataclasses
 import inspect
 
 
-def compose_fn(cls, name: str, body_lines: List[str]) -> ParsedDef:
+def compose_fn(cls, name: str, body_lines: List[str], signature: Optional[str] = None) -> ParsedDef:
     # Simply read off the function signature from CPython's implementation, since
     # inspect.signature() will succeed here even though inspect.getsource() fails
-    signature = inspect.signature(getattr(cls, name))
+    signature = signature or inspect.signature(getattr(cls, name))
     body = '\n'.join(f'  {b}' for b in body_lines)
     decl = f'def {name}{signature}:\n{body}'
 
@@ -57,7 +57,7 @@ def synthesize__repr__(cls) -> ParsedDef:
         cls, '__repr__',
         [f"return '{cls.__name__}(" + ", ".join([
             f"{field.name}=self.{field.name}"
-            for field in dataclasses.fields(cls)
+            for field in dataclasses.fields(cls) if field.repr
         ]) +")'"]
     )
 
@@ -65,30 +65,49 @@ def synthesize__hash__(cls) -> ParsedDef:
     return compose_fn(
         cls, '__hash__',
         [
-            # Return the hash of a tuple of all the attributes
-            f"return hash(({', '.join([f'self.{field.name}' for field in dataclasses.fields(cls)])}))"
+            # This is just a placeholder to prevent compilation from failing; this won't even get called at
+            # all right now because the TorchScript interpreter doesn't call custom __hash__ implementations
+            f"raise NotImplementedError('__hash__ is not supported for dataclasses in TorchScript')"
         ]
     )
 
-def synthesize_comparator(cls, name: str) -> ParsedDef:
+# Implementation for __eq__ and __ne__
+def synthesize_equality(cls, name: str, converse: str) -> ParsedDef:
     return compose_fn(
         cls, name,
         [
-            # It's not clear how we would want to handle this. If you just create a dataclass with tensors in it outside of JIT,
-            # the comparator magic methods work only if the tensors are all scalars, otherwise you get a "boolean value of tensor
-            # with more than one value is ambiguous" error. This behavior is not really ideal outside of JIT, so we probably
-            # shouldn't import it into TorchScript by synthesizing methods that will fail a lot of the time.
-            f"raise NotImplementedError('{name} not implemented for dataclasses in TorchScript- please implement it yourself')"
-        ]
+            # Short circuit at the first opportunity
+            f"if self.{field.name} {converse} other.{field.name}: return False"
+            for field in dataclasses.fields(cls) if field.compare
+        ] + [
+            f"return True"
+        ],
+        signature=f'(self, other: {cls.__name__}) -> bool'
     )
+
+def synthesize_inequality(cls, name: str, op: str, converse: str, allow_eq: bool) -> ParsedDef:
+    body = []
+    for field in dataclasses.fields(cls):
+        if not field.compare:
+            continue
+
+        body.extend([
+            # Lexicographic ordering
+            f"if self.{field.name} {op} other.{field.name}: return True",
+            f"elif other.{field.name} {converse} self.{field.name}: return False"
+        ])
+    
+    body.append(f"return {allow_eq}")
+    return compose_fn(cls, name, body, signature=f'(self, other: {cls.__name__}) -> bool')
 
 DATACLASS_MAGIC_METHODS = {
     "__init__": synthesize__init__,
     "__repr__": synthesize__repr__,
     "__hash__": synthesize__hash__,
-    "__eq__": partial(synthesize_comparator, name="__eq__"),
-    "__lt__": partial(synthesize_comparator, name="__lt__"),
-    "__le__": partial(synthesize_comparator, name="__le__"),
-    "__gt__": partial(synthesize_comparator, name="__gt__"),
-    "__ge__": partial(synthesize_comparator, name="__ge__")
+    "__eq__": partial(synthesize_equality, name="__eq__", converse="!="),
+    "__ne__": partial(synthesize_equality, name="__ne__", converse="=="),
+    "__lt__": partial(synthesize_inequality, name="__lt__", op="<", converse=">", allow_eq=False),
+    "__le__": partial(synthesize_inequality, name="__le__", op="<", converse=">", allow_eq=True),
+    "__gt__": partial(synthesize_inequality, name="__gt__", op=">", converse="<", allow_eq=False),
+    "__ge__": partial(synthesize_inequality, name="__ge__", op=">", converse="<", allow_eq=True),
 }
