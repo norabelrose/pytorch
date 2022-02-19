@@ -4,7 +4,6 @@ import ast
 import dataclasses
 import inspect
 import string
-import warnings
 from collections import namedtuple
 from textwrap import dedent
 from typing import List, Tuple  # noqa: F401
@@ -185,7 +184,7 @@ def get_class_assigns(ctx, cls_ast):
     return assigns
 
 
-def get_jit_class_def(cls, self_name):
+def get_jit_class_def(cls, self_name, source=None):
     # Get defs for each method within the current class independently
     # TODO: proper overriding analysis when implementing class inheritance
     methods = inspect.getmembers(
@@ -205,13 +204,19 @@ def get_jit_class_def(cls, self_name):
     # methods, however, is well defined in the Python docs, so we can synthesize these method
     # implementations ourselves.
     if dataclasses.is_dataclass(cls):
-        warnings.warn("TorchScript support for dataclasses is experimental and behavior may change in the future.")
         method_defs = []
 
         for (name, obj) in methods:
+            # Is this a magic method we can synthesize?
             synthesizer_fn = DATACLASS_MAGIC_METHODS.get(name)
+
+            # We could synthesize it, but we need to check if the user has overridden it first.
+            # We assume that if the method was dynamically generated from a string, it was created
+            # by the dataclasses module and not by the user. TODO: see if there is a more robust way to do this
             if synthesizer_fn:
-                obj = synthesizer_fn(cls)
+                file = inspect.getsourcefile(obj)
+                if isinstance(file, str) and (file == '<string>' or file.endswith('/dataclasses.py')):
+                    obj = synthesizer_fn(cls)
 
             method_defs.append(
                 get_jit_def(obj, name, self_name=self_name, is_classmethod=is_classmethod(obj))
@@ -226,8 +231,14 @@ def get_jit_class_def(cls, self_name):
 
     properties = get_class_properties(cls, self_name)
 
-    sourcelines, file_lineno, filename = get_source_lines_and_file(cls, torch._C.ErrorReport.call_stack())
-    source = ''.join(sourcelines)
+    if not source:
+        sourcelines, file_lineno, filename = get_source_lines_and_file(cls, torch._C.ErrorReport.call_stack())
+        source = ''.join(sourcelines)
+    else:
+        sourcelines = source.split('\n')
+        file_lineno = 0
+        filename = "<string>"
+
     dedent_src = dedent(source)
     py_ast = ast.parse(dedent_src)
     leading_whitespace_len = len(source.split('\n', 1)[0]) - len(dedent_src.split('\n', 1)[0])

@@ -53,7 +53,7 @@ def normalize_source_lines(sourcelines: List[str]) -> List[str]:
         if l.lstrip().startswith("def"):
             idx = i
             break
-    
+
     # This will happen when the function is a lambda- we won't find "def" anywhere in the source
     # lines in that case. Currently trying to JIT compile a lambda will throw an error up in
     # `parse_def()`, but we might want to handle this case in the future.
@@ -113,7 +113,7 @@ def parse_def(fn):
             raise RuntimeError(f"Expected a single top-level function: {filename}:{file_lineno}")
         else:
             raise RuntimeError(f"It's not currently supported to compile lambda expressions: {filename}:{file_lineno}")
-    
+
     leading_whitespace_len = len(source.split('\n', 1)[0]) - len(dedent_src.split('\n', 1)[0])
     ctx = make_source_context(source, filename, file_lineno, leading_whitespace_len, True, fn.__name__)
     return ParsedDef(py_ast, ctx, source, filename, file_lineno)
