@@ -6,7 +6,7 @@ from typing import Callable, Dict, List
 import ast
 import dataclasses
 import inspect
-import re
+import sys
 
 
 def compose_fn(cls, name: str, body_lines: List[str], signature: str) -> ParsedDef:
@@ -39,8 +39,6 @@ def compose_fn(cls, name: str, body_lines: List[str], signature: str) -> ParsedD
     )
 
 
-INIT_VAR_REGEX = re.compile(r'^(dataclasses\.)?InitVar\[(.*)\]$')
-
 def synthesize__init__(cls) -> ParsedDef:
     # Supporting default factories in the way that people expect would sort of require us to
     # allow compiling lambda functions, which is not currently supported.
@@ -51,36 +49,23 @@ def synthesize__init__(cls) -> ParsedDef:
     # almost correct except for InitVar annotations, which we need to handle specially.
     signature = inspect.signature(cls.__init__)
 
-    # Handle InitVars if needed
-    init_vars = []
-    params = []
-    for name, param in signature.parameters.items():
-        ann = param.annotation
+    # Handle InitVars if needed (only works on Python 3.8+, when a `type` attribute was added to InitVar);
+    # see CPython commit here https://github.com/python/cpython/commit/01ee12ba35a333e8a6a25c4153c4a21838e9585c
+    init_vars: List[str] = []
+    if sys.version_info >= (3, 8):
+        params = []
+        for name, param in signature.parameters.items():
+            ann = param.annotation
 
-        # This is a pretty hacky way to handle InitVars, but it seems to be the only way to get it to work
-        # on Python 3.7 (while also avoiding a hard dependency on the CPython implementation)
-        maybe_match = INIT_VAR_REGEX.match(str(ann))
-        if maybe_match:
-            inner_type_str = maybe_match.group(2)
+            if isinstance(ann, dataclasses.InitVar):
+                # The TorchScript interpreter can't handle InitVar annotations, so we unwrap the underlying type here
+                init_vars.append(name)
+                params.append(param.replace(annotation=getattr(ann, 'type')))
+            else:
+                params.append(param)
 
-            try:
-                unwrapped = eval(inner_type_str)
-            # This might fail if the inner type is not in scope (e.g, not a builtin)
-            except NameError:
-                # Last ditch effort to unwrap the type- use undocumented CPython attribute
-                unwrapped = getattr(ann, 'type', None)
-                if not unwrapped:
-                    raise RuntimeError(
-                        "TorchScript failed to unwrap type for InitVar annotation; please flag an issue on GitHub"
-                    )
+        signature = signature.replace(parameters=params)
 
-            # The TorchScript interpreter can't handle InitVar annotations, so we unwrap the underlying type here
-            init_vars.append(name)
-            params.append(param.replace(annotation=unwrapped))
-        else:
-            params.append(param)
-
-    signature = signature.replace(parameters=params)
     body = [
         # Assign all attributes to self
         f'self.{field.name} = {field.name}'
