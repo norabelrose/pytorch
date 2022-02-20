@@ -1,8 +1,9 @@
 # Owner(s): ["oncall: jit"]
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from hypothesis import given, strategies as st
 from torch.testing._internal.jit_utils import JitTestCase
+from typing import Optional
 import torch
 
 if __name__ == '__main__':
@@ -12,32 +13,26 @@ if __name__ == '__main__':
 
 # Example jittable dataclass
 @dataclass(order=True)
-class Point(object):
+class Point:
     x: float
     y: float
+    norm: Optional[torch.Tensor] = None
 
     def __post_init__(self):
-        pass
-
-    def __add__(self, other: 'Point') -> 'Point':
-        return Point(self.x + other.x, self.y + other.y)
-
-    def __mul__(self, scalar: float) -> 'Point':
-        return Point(self.x * scalar, self.y * scalar)
+        self.norm = (torch.tensor(self.x) ** 2 + torch.tensor(self.y) ** 2) ** 0.5
 
 
 # Hypothesis strategies
 ExtendedReals = st.floats(allow_infinity=True, allow_nan=False)
 
 class TestDataclasses(JitTestCase):
-    def test_init(self):
-        def fn(x, y):
-            pt1 = Point(x, y)
-            pt2 = pt1 * 42.0
-            return (pt1 + pt2)
+    # Sort of tests both __post_init__ and optional fields
+    @given(ExtendedReals, ExtendedReals)
+    def test__post_init__(self, x, y):
+        def fn(x: float, y: float):
+            pt = Point(x, y)
+            return pt.norm
 
-        x = torch.tensor(2.0)
-        y = torch.tensor(3.0)
         self.checkScript(fn, [x, y])
 
     @given(st.tuples(ExtendedReals, ExtendedReals), st.tuples(ExtendedReals, ExtendedReals))
@@ -58,6 +53,18 @@ class TestDataclasses(JitTestCase):
             )
 
         self.checkScript(compare, [x1, y1, x2, y2])
+
+    def test_default_factories(self):
+        @dataclass
+        class Foo(object):
+            x: list[int] = field(default_factory=list)
+
+        with self.assertRaises(NotImplementedError):
+            def fn():
+                foo = Foo()
+                return foo.x
+
+            torch.jit.script(fn)()
 
     # The user should be able to write their own __eq__ implementation
     # without us overriding it.

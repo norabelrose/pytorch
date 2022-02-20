@@ -55,6 +55,7 @@ def synthesize__init__(cls) -> ParsedDef:
     if hasattr(cls, '__post_init__'):
         body.append('self.__post_init__()')    # TODO: Support InitVars here
 
+    # breakpoint()
     return compose_fn(cls, '__init__', body or ['pass'])
 
 # This is a placeholder at the moment since the TorchScript interpreter doesn't call __repr__
@@ -79,17 +80,28 @@ def synthesize__hash__(cls) -> ParsedDef:
 
 # Implementation for __eq__ and __ne__
 def synthesize_equality(cls, name: str, converse: str) -> ParsedDef:
-    return compose_fn(
-        cls, name,
-        [
-            # Short circuit at the first opportunity
-            f"if self.{field.name} {converse} other.{field.name}: return False"
-            for field in dataclasses.fields(cls) if field.compare
-        ] + [
-            "return True"
-        ],
-        signature=f'(self, other: {cls.__name__}) -> bool'
-    )
+    body = []
+    for field in dataclasses.fields(cls):
+        if not field.compare:
+            continue
+
+        # Add type refinement for optionals. Probably the TorchScript interpreter should be able to
+        # ust handle this for us, but currently __eq__ and __ne__ are not implemented for optional types.
+        if 'Optional[' in str(field.type):
+            body.extend([
+                # Assign to local variables so the compiler recognizes the optional refinement"
+                f"val1 = self.{field.name}",
+                f"val2 = other.{field.name}",
+                "if val1 is not None and val2 is not None:",
+                f"  if val1 {converse} val2: return False",
+                f"elif (val1 is None) {converse} (val2 is None):",
+                "  return False"
+            ])
+        else:
+            body.append(f"if self.{field.name} {converse} other.{field.name}: return False")
+
+    body.append("return True")
+    return compose_fn(cls, name, body, signature=f'(self, other: {cls.__name__}) -> bool')
 
 def synthesize_inequality(cls, name: str, op: str, allow_eq: bool) -> ParsedDef:
     body = []
@@ -97,11 +109,22 @@ def synthesize_inequality(cls, name: str, op: str, allow_eq: bool) -> ParsedDef:
         if not field.compare:
             continue
 
-        body.extend([
-            # Lexicographic ordering
-            f"if self.{field.name} {op} other.{field.name}: return True",
-            f"elif other.{field.name} {op} self.{field.name}: return False"
-        ])
+        if 'Optional[' in str(field.type):
+            body.extend([
+                f"val1 = self.{field.name}",
+                f"val2 = other.{field.name}",
+                "if val1 is not None and val2 is not None:",
+                f"  if val1 {op} val2: return True",
+                f"  elif val2 {op} val1: return False",
+                "elif (val1 is None) != (val2 is None):",
+                f"  raise TypeError('Cannot compare {cls.__name__} with None')"
+            ])
+        else:
+            body.extend([
+                # Lexicographic ordering
+                f"if self.{field.name} {op} other.{field.name}: return True",
+                f"elif other.{field.name} {op} self.{field.name}: return False"
+            ])
 
     body.append(f"return {allow_eq}")
     return compose_fn(cls, name, body, signature=f'(self, other: {cls.__name__}) -> bool')
