@@ -1,9 +1,9 @@
 # Owner(s): ["oncall: jit"]
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, InitVar
 from hypothesis import given, strategies as st
 from torch.testing._internal.jit_utils import JitTestCase
-from typing import Optional
+from typing import List, Optional
 import torch
 
 if __name__ == '__main__':
@@ -16,10 +16,11 @@ if __name__ == '__main__':
 class Point:
     x: float
     y: float
+    norm_p: InitVar[int] = 2
     norm: Optional[torch.Tensor] = None
 
-    def __post_init__(self):
-        self.norm = (torch.tensor(self.x) ** 2 + torch.tensor(self.y) ** 2) ** 0.5
+    def __post_init__(self, norm_p: int):
+        self.norm = (torch.tensor(self.x) ** norm_p + torch.tensor(self.y) ** norm_p) ** (1 / norm_p)
 
 
 # Hypothesis strategies
@@ -27,13 +28,13 @@ ExtendedReals = st.floats(allow_infinity=True, allow_nan=False)
 
 class TestDataclasses(JitTestCase):
     # Sort of tests both __post_init__ and optional fields
-    @given(ExtendedReals, ExtendedReals)
-    def test__post_init__(self, x, y):
-        def fn(x: float, y: float):
-            pt = Point(x, y)
+    @given(ExtendedReals, ExtendedReals, st.integers(1, 10))
+    def test__post_init__(self, x, y, p):
+        def fn(x: float, y: float, p: int):
+            pt = Point(x, y, p)
             return pt.norm
 
-        self.checkScript(fn, [x, y])
+        self.checkScript(fn, [x, y, p])
 
     @given(st.tuples(ExtendedReals, ExtendedReals), st.tuples(ExtendedReals, ExtendedReals))
     def test_comparators(self, pt1, pt2):
@@ -57,7 +58,7 @@ class TestDataclasses(JitTestCase):
     def test_default_factories(self):
         @dataclass
         class Foo(object):
-            x: list[int] = field(default_factory=list)
+            x: List[int] = field(default_factory=list)
 
         with self.assertRaises(NotImplementedError):
             def fn():

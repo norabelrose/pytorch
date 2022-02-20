@@ -1,16 +1,13 @@
 # Functions for synthesizing magic methods for JIT-compiled dataclasses
 from functools import partial
 from torch._sources import ParsedDef, SourceContext
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List
 import ast
 import dataclasses
 import inspect
 
 
-def compose_fn(cls, name: str, body_lines: List[str], signature: Optional[str] = None) -> ParsedDef:
-    # Simply read off the function signature from CPython's implementation, since
-    # inspect.signature() will succeed here even though inspect.getsource() fails
-    signature = signature or str(inspect.signature(getattr(cls, name)))
+def compose_fn(cls, name: str, body_lines: List[str], signature: str) -> ParsedDef:
     body = '\n'.join(f'  {b}' for b in body_lines)
     decl = f'def {name}{signature}:\n{body}'
 
@@ -46,17 +43,35 @@ def synthesize__init__(cls) -> ParsedDef:
     if any(field.default_factory is not dataclasses.MISSING for field in dataclasses.fields(cls)):
         raise NotImplementedError("Default factory initializers are not supported in TorchScript dataclasses")
 
+    # Simply read off the function signature from CPython's implementation, since
+    # inspect.signature() will succeed here even though inspect.getsource() fails
+    signature = inspect.signature(cls.__init__)
+
+    # Handle InitVars if needed
+    init_vars = []
+    params = []
+    for name, param in signature.parameters.items():
+        ann = param.annotation
+        if isinstance(ann, dataclasses.InitVar):
+            # The TorchScript interpreter doesn't know what to do with InitVar type annotations,
+            # so we unwrap the underlying type here
+            init_vars.append(name)
+            params.append(param.replace(annotation=ann.type))
+        else:
+            params.append(param)
+
+    signature = signature.replace(parameters=params)
     body = [
         # Assign all attributes to self
         f'self.{field.name} = {field.name}'
-        for field in dataclasses.fields(cls) if field.init
+        for field in dataclasses.fields(cls)
+        if field.init and field.name not in init_vars
     ]
     # Call user's impl of __post_init__ if it exists
     if hasattr(cls, '__post_init__'):
-        body.append('self.__post_init__()')    # TODO: Support InitVars here
+        body.append('self.__post_init__(' + ', '.join(init_vars) + ')')
 
-    # breakpoint()
-    return compose_fn(cls, '__init__', body or ['pass'])
+    return compose_fn(cls, '__init__', body or ['pass'], signature=str(signature))
 
 # This is a placeholder at the moment since the TorchScript interpreter doesn't call __repr__
 def synthesize__repr__(cls) -> ParsedDef:
@@ -65,7 +80,8 @@ def synthesize__repr__(cls) -> ParsedDef:
         [f"return '{cls.__name__}(" + ", ".join([
             f"{field.name}=self.{field.name}"
             for field in dataclasses.fields(cls) if field.repr
-        ]) + ")'"]
+        ]) + ")'"],
+        signature='(self) -> str'
     )
 
 def synthesize__hash__(cls) -> ParsedDef:
@@ -75,7 +91,8 @@ def synthesize__hash__(cls) -> ParsedDef:
             # This is just a placeholder to prevent compilation from failing; this won't even get called at
             # all right now because the TorchScript interpreter doesn't call custom __hash__ implementations
             "raise NotImplementedError('__hash__ is not supported for dataclasses in TorchScript')"
-        ]
+        ],
+        signature='(self) -> int'
     )
 
 # Implementation for __eq__ and __ne__
