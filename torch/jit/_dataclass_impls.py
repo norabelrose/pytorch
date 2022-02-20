@@ -89,7 +89,7 @@ def synthesize_equality(cls, name: str, converse: str) -> ParsedDef:
         # ust handle this for us, but currently __eq__ and __ne__ are not implemented for optional types.
         if 'Optional[' in str(field.type):
             body.extend([
-                # Assign to local variables so the compiler recognizes the optional refinement"
+                # Assign to local variables so the compiler recognizes the optional refinement
                 f"val1 = self.{field.name}",
                 f"val2 = other.{field.name}",
                 "if val1 is not None and val2 is not None:",

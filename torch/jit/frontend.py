@@ -184,7 +184,7 @@ def get_class_assigns(ctx, cls_ast):
     return assigns
 
 
-def get_jit_class_def(cls, self_name, source=None):
+def get_jit_class_def(cls, self_name):
     # Get defs for each method within the current class independently
     # TODO: proper overriding analysis when implementing class inheritance
     methods = inspect.getmembers(
@@ -197,6 +197,16 @@ def get_jit_class_def(cls, self_name, source=None):
     def is_classmethod(fn):
         return inspect.ismethod(fn) and getattr(fn, "__self__", None) == cls
 
+    # Get and parse the source code for this class
+    sourcelines, file_lineno, filename = get_source_lines_and_file(cls, torch._C.ErrorReport.call_stack())
+    source = ''.join(sourcelines)
+
+    dedent_src = dedent(source)
+    py_ast = ast.parse(dedent_src)
+
+    class_ast = py_ast.body[0]
+    assert isinstance(class_ast, ast.ClassDef)
+
     # Special case for dataclasses. In general we need access to the source code for
     # any function or method to JIT compile it. But the dataclasses module dynamically
     # adds magic methods to classes, and we can't get the source code for those- in particular,
@@ -206,17 +216,19 @@ def get_jit_class_def(cls, self_name, source=None):
     if dataclasses.is_dataclass(cls):
         method_defs = []
 
+        # Detect whether the user manually implemented any of the magic methods. If they did,
+        # we don't want to synthesize/override them.
+        overrides = {
+            method
+            for method in class_ast.body
+            if isinstance(method, ast.FunctionDef) and method.name in DATACLASS_MAGIC_METHODS
+        }
+
         for (name, obj) in methods:
             # Is this a magic method we can synthesize?
             synthesizer_fn = DATACLASS_MAGIC_METHODS.get(name)
-
-            # We could synthesize it, but we need to check if the user has overridden it first.
-            # We assume that if the method was dynamically generated from a string, it was created
-            # by the dataclasses module and not by the user. TODO: see if there is a more robust way to do this
-            if synthesizer_fn:
-                file = inspect.getsourcefile(obj)
-                if isinstance(file, str) and (file == '<string>' or file.endswith('/dataclasses.py')):
-                    obj = synthesizer_fn(cls)
+            if synthesizer_fn and name not in overrides:
+                obj = synthesizer_fn(cls)
 
             method_defs.append(
                 get_jit_def(obj, name, self_name=self_name, is_classmethod=is_classmethod(obj))
@@ -231,20 +243,8 @@ def get_jit_class_def(cls, self_name, source=None):
 
     properties = get_class_properties(cls, self_name)
 
-    if not source:
-        sourcelines, file_lineno, filename = get_source_lines_and_file(cls, torch._C.ErrorReport.call_stack())
-        source = ''.join(sourcelines)
-    else:
-        sourcelines = source.split('\n')
-        file_lineno = 0
-        filename = "<string>"
-
-    dedent_src = dedent(source)
-    py_ast = ast.parse(dedent_src)
     leading_whitespace_len = len(source.split('\n', 1)[0]) - len(dedent_src.split('\n', 1)[0])
     ctx = make_source_context(source, filename, file_lineno, leading_whitespace_len, False)
-    class_ast = py_ast.body[0]
-    assert isinstance(class_ast, ast.ClassDef)
     assigns = get_class_assigns(ctx, class_ast)
 
     return build_class_def(ctx, class_ast, method_defs, properties, self_name, assigns)
