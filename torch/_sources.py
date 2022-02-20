@@ -107,12 +107,7 @@ def parse_def(fn):
     py_ast = ast.parse(dedent_src)
 
     if len(py_ast.body) != 1 or not isinstance(py_ast.body[0], ast.FunctionDef):
-        # Check to see if the user is trying to compile a lambda to provide a more helpful error message.
-        lambdas = [node for node in ast.walk(py_ast) if isinstance(node, ast.Lambda)]
-        if not lambdas:
-            raise RuntimeError(f"Expected a single top-level function: {filename}:{file_lineno}")
-        else:
-            raise RuntimeError(f"It's not currently supported to compile lambda expressions: {filename}:{file_lineno}")
+        raise RuntimeError(f"Expected a single top-level function: {filename}:{file_lineno}")
 
     leading_whitespace_len = len(source.split('\n', 1)[0]) - len(dedent_src.split('\n', 1)[0])
     ctx = make_source_context(source, filename, file_lineno, leading_whitespace_len, True, fn.__name__)

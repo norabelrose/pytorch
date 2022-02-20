@@ -53,7 +53,9 @@ def synthesize__init__(cls) -> ParsedDef:
     params = []
     for name, param in signature.parameters.items():
         ann = param.annotation
-        if isinstance(ann, dataclasses.InitVar):
+
+        # The second condition is a hack to fix weird unit test failures in some CI environments
+        if isinstance(ann, dataclasses.InitVar) or 'InitVar' in str(ann):
             # The TorchScript interpreter can't handle InitVar annotations, so we unwrap the underlying type here
             init_vars.append(name)
 
