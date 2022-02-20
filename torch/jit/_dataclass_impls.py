@@ -1,5 +1,6 @@
 # Functions for synthesizing magic methods for JIT-compiled dataclasses
 from functools import partial
+from torch._jit_internal import is_optional
 from torch._sources import ParsedDef, SourceContext
 from typing import Callable, Dict, List
 import ast
@@ -43,8 +44,8 @@ def synthesize__init__(cls) -> ParsedDef:
     if any(field.default_factory is not dataclasses.MISSING for field in dataclasses.fields(cls)):
         raise NotImplementedError("Default factory initializers are not supported in TorchScript dataclasses")
 
-    # Simply read off the function signature from CPython's implementation, since
-    # inspect.signature() will succeed here even though inspect.getsource() fails
+    # Simply read off the generated __init__ signature from CPython's implementation. It'll be
+    # almost correct except for InitVar annotations, which we need to handle specially.
     signature = inspect.signature(cls.__init__)
 
     # Handle InitVars if needed
@@ -53,10 +54,13 @@ def synthesize__init__(cls) -> ParsedDef:
     for name, param in signature.parameters.items():
         ann = param.annotation
         if isinstance(ann, dataclasses.InitVar):
-            # The TorchScript interpreter doesn't know what to do with InitVar type annotations,
-            # so we unwrap the underlying type here
+            # The TorchScript interpreter can't handle InitVar annotations, so we unwrap the underlying type here
             init_vars.append(name)
-            params.append(param.replace(annotation=ann.type))
+
+            # The 'type' attribute on InitVar is undocumented, but we need it to get the type
+            unwrapped = getattr(ann, 'type', None)
+            assert unwrapped is not None, "Failed to unwrap type for InitVar annotation; please flag an issue on GitHub"
+            params.append(param.replace(annotation=unwrapped))
         else:
             params.append(param)
 
@@ -97,51 +101,35 @@ def synthesize__hash__(cls) -> ParsedDef:
 
 # Implementation for __eq__ and __ne__
 def synthesize_equality(cls, name: str, converse: str) -> ParsedDef:
-    body = []
-    for field in dataclasses.fields(cls):
-        if not field.compare:
-            continue
-
-        # Add type refinement for optionals. Probably the TorchScript interpreter should be able to
-        # ust handle this for us, but currently __eq__ and __ne__ are not implemented for optional types.
-        if 'Optional[' in str(field.type):
-            body.extend([
-                # Assign to local variables so the compiler recognizes the optional refinement
-                f"val1 = self.{field.name}",
-                f"val2 = other.{field.name}",
-                "if val1 is not None and val2 is not None:",
-                f"  if val1 {converse} val2: return False",
-                f"elif (val1 is None) {converse} (val2 is None):",
-                "  return False"
-            ])
-        else:
-            body.append(f"if self.{field.name} {converse} other.{field.name}: return False")
-
-    body.append("return True")
-    return compose_fn(cls, name, body, signature=f'(self, other: {cls.__name__}) -> bool')
+    return synthesize_comparison(cls, name, allow_eq=True, raise_on_none=False, inner=[
+        f"if val1 {converse} val2: return False"
+    ])
 
 def synthesize_inequality(cls, name: str, op: str, allow_eq: bool) -> ParsedDef:
+    return synthesize_comparison(cls, name, allow_eq, raise_on_none=True, inner=[
+        f"if val1 {op} val2: return True",
+        f"elif val2 {op} val1: return False",
+    ])
+
+def synthesize_comparison(cls, name: str, allow_eq: bool, raise_on_none: bool, inner: List[str]) -> ParsedDef:
     body = []
     for field in dataclasses.fields(cls):
         if not field.compare:
             continue
 
-        if 'Optional[' in str(field.type):
-            body.extend([
-                f"val1 = self.{field.name}",
-                f"val2 = other.{field.name}",
+        body.extend([
+            f"val1 = self.{field.name}",
+            f"val2 = other.{field.name}",
+        ])
+        body.extend(
+            inner if not is_optional(field.type) else [
+                # Type refinement for optional fields; we need this to avoid type errors from the interpreter
                 "if val1 is not None and val2 is not None:",
-                f"  if val1 {op} val2: return True",
-                f"  elif val2 {op} val1: return False",
+                *['  ' + line for line in inner],
                 "elif (val1 is None) != (val2 is None):",
-                f"  raise TypeError('Cannot compare {cls.__name__} with None')"
-            ])
-        else:
-            body.extend([
-                # Lexicographic ordering
-                f"if self.{field.name} {op} other.{field.name}: return True",
-                f"elif other.{field.name} {op} self.{field.name}: return False"
-            ])
+                f"  raise TypeError('Cannot compare {cls.__name__} with None')" if raise_on_none else "  return False"
+            ]
+        )
 
     body.append(f"return {allow_eq}")
     return compose_fn(cls, name, body, signature=f'(self, other: {cls.__name__}) -> bool')

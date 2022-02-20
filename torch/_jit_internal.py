@@ -911,7 +911,7 @@ def is_optional(ann):
 
     def is_union_as_optional(ann):
         ann_args = ann.__args__
-        return len(ann_args) == 2 and None in ann_args
+        return len(ann_args) == 2 and (None in ann_args or type(None) in ann_args)
 
     return is_optional_as_optional(ann) or (is_union(ann) and is_union_as_optional(ann))
 

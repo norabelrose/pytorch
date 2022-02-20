@@ -208,14 +208,10 @@ def get_jit_class_def(cls, self_name):
     assert isinstance(class_ast, ast.ClassDef)
 
     # Special case for dataclasses. In general we need access to the source code for
-    # any function or method to JIT compile it. But the dataclasses module dynamically
-    # adds magic methods to classes, and we can't get the source code for those- in particular,
-    # inspect.getsourcefile() fails for these methods. The precise behavior for these magic
-    # methods, however, is well defined in the Python docs, so we can synthesize these method
-    # implementations ourselves.
+    # an object in order to JIT compile it. But the dataclasses module dynamically synthesizes
+    # magic methods for classes, and we can't get the source code for these methods. As a
+    # workaround, we synthesize TorchScript-friendly implementations ourselves.
     if dataclasses.is_dataclass(cls):
-        method_defs = []
-
         # Detect whether the user manually implemented any of the magic methods. If they did,
         # we don't want to synthesize/override them.
         overrides = {
@@ -224,23 +220,16 @@ def get_jit_class_def(cls, self_name):
             if isinstance(method, ast.FunctionDef) and method.name in DATACLASS_MAGIC_METHODS
         }
 
-        for (name, obj) in methods:
+        for i, (name, _) in enumerate(methods):
             # Is this a magic method we can synthesize?
             synthesizer_fn = DATACLASS_MAGIC_METHODS.get(name)
             if synthesizer_fn and name not in overrides:
-                obj = synthesizer_fn(cls)
+                methods[i] = name, synthesizer_fn(cls)
 
-            method_defs.append(
-                get_jit_def(obj, name, self_name=self_name, is_classmethod=is_classmethod(obj))
-            )
-
-    # Normal case
-    else:
-        method_defs = [
-            get_jit_def(obj, name, self_name=self_name, is_classmethod=is_classmethod(obj))
-            for (name, obj) in methods
-        ]
-
+    method_defs = [
+        get_jit_def(obj, name, self_name=self_name, is_classmethod=is_classmethod(obj))
+        for (name, obj) in methods
+    ]
     properties = get_class_properties(cls, self_name)
 
     leading_whitespace_len = len(source.split('\n', 1)[0]) - len(dedent_src.split('\n', 1)[0])
