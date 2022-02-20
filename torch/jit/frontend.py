@@ -219,7 +219,7 @@ def get_jit_class_def(cls, self_name):
         # Detect whether the user manually implemented any of the magic methods. If they did,
         # we don't want to synthesize/override them.
         overrides = {
-            method
+            method.name
             for method in class_ast.body
             if isinstance(method, ast.FunctionDef) and method.name in DATACLASS_MAGIC_METHODS
         }
