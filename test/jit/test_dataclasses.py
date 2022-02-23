@@ -24,8 +24,8 @@ class Point:
         self.norm = (torch.tensor(self.x) ** 2 + torch.tensor(self.y) ** 2) ** 0.5
 
 
-# Hypothesis strategies
-ExtendedReals = st.floats(allow_infinity=True, allow_nan=False)
+# Make sure the Meta internal tooling doesn't raise an overflow error
+NonHugeFloats = st.floats(min_value=-1e4, max_value=1e4, allow_nan=False)
 
 class TestDataclasses(JitTestCase):
     # We only support InitVar in JIT dataclasses for Python 3.8+ because it would be very hard
@@ -49,7 +49,7 @@ class TestDataclasses(JitTestCase):
         self.checkScript(fn, (1.0, 2.0, 3))
 
     # Sort of tests both __post_init__ and optional fields
-    @given(ExtendedReals, ExtendedReals)
+    @given(NonHugeFloats, NonHugeFloats)
     def test__post_init__(self, x, y):
         def fn(x: float, y: float):
             pt = Point(x, y)
@@ -57,7 +57,7 @@ class TestDataclasses(JitTestCase):
 
         self.checkScript(fn, [x, y])
 
-    @given(st.tuples(ExtendedReals, ExtendedReals), st.tuples(ExtendedReals, ExtendedReals))
+    @given(st.tuples(NonHugeFloats, NonHugeFloats), st.tuples(NonHugeFloats, NonHugeFloats))
     def test_comparators(self, pt1, pt2):
         x1, y1 = pt1
         x2, y2 = pt2
